@@ -1,22 +1,21 @@
 module UNet
 
-export Unet, bce, load_img, load_batch
+export Unet
 
-using Reexport
-
-using Flux
+using StatsBase, Flux, Random
 using Flux: @functor
 
-using ImageCore
-using ImageTransformations: imresize
-using FileIO
 using Distributions: Normal
 
-@reexport using Statistics
-@reexport using Flux, Flux.Zygote, Flux.Optimise
+testing_seed = nothing
+
+test_mode() = (global testing_seed = 1)
+run_mode() = (global testing_seed = nothing)
 
 include("utils.jl")
-include("dataloader.jl")
 include("model.jl")
+
+# Legacy to make sure correct result
+include("legacy.jl")
 
 end # module

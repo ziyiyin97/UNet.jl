@@ -1,15 +1,13 @@
-function BatchNormWrap(out_ch)
-    Chain(x->expand_dims(x,2),
-	  BatchNorm(out_ch),
-	  x->squeeze(x))
+function BatchNormWrap(out_ch::Integer)
+    Chain(x->expand_dims(x,2), BatchNorm(out_ch), x->squeeze(x))
 end
 
-UNetConvBlock(in_chs, out_chs, kernel = (3, 3)) =
+UNetConvBlock(in_chs::Integer, out_chs::Integer, kernel = (3, 3)) =
     Chain(Conv(kernel, in_chs=>out_chs,pad = (1, 1);init=_random_normal),
 	BatchNormWrap(out_chs),
 	x->leakyrelu.(x,0.2f0))
 
-ConvDown(in_chs,out_chs,kernel = (4,4)) =
+ConvDown(in_chs::Integer, out_chs::Integer, kernel = (4,4)) =
   Chain(Conv(kernel,in_chs=>out_chs,pad=(1,1),stride=(2,2);init=_random_normal),
 	BatchNormWrap(out_chs),
 	x->leakyrelu.(x,0.2f0))
@@ -20,14 +18,14 @@ end
 
 @functor UNetUpBlock
 
-UNetUpBlock(in_chs::Int, out_chs::Int; kernel = (3, 3), p = 0.5f0) = 
+UNetUpBlock(in_chs::Integer, out_chs::Integer; kernel = (3, 3), p = 0.5f0) = 
     UNetUpBlock(Chain(x->leakyrelu.(x,0.2f0),
        		ConvTranspose((2, 2), in_chs=>out_chs,
 			stride=(2, 2);init=_random_normal),
 		BatchNormWrap(out_chs),
-		Dropout(p)))
+		Dropout(isnothing(testing_seed) ? p : 0f0)))
 
-function (u::UNetUpBlock)(x, bridge)
+function (u::UNetUpBlock)(x::AbstractArray{T, 4}, bridge::AbstractArray{T, 4}) where T
   x = u.upsample(x)
   return cat(x, bridge, dims = 3)
 end
@@ -38,52 +36,45 @@ end
   Initializes a [UNet](https://arxiv.org/pdf/1505.04597.pdf) instance with the given number of `channels`, typically equal to the number of channels in the input images.
   `labels`, equal to the number of input channels by default, specifies the number of output channels.
 """
-struct Unet
+struct Unet{D}
   conv_down_blocks
+  init_conv_block
   conv_blocks
   up_blocks
+  out_blocks
 end
 
 @functor Unet
 
-function Unet(channels::Int = 1, labels::Int = channels)
-  conv_down_blocks = Chain(ConvDown(64,64),
-		      ConvDown(128,128),
-		      ConvDown(256,256),
-		      ConvDown(512,512))
+function Unet(channels::Integer = 1, labels::Int = channels, depth::Integer=5)
 
-  conv_blocks = Chain(UNetConvBlock(channels, 3),
-		 UNetConvBlock(3, 64),
-		 UNetConvBlock(64, 128),
-		 UNetConvBlock(128, 256),
-		 UNetConvBlock(256, 512),
-		 UNetConvBlock(512, 1024),
-		 UNetConvBlock(1024, 1024))
+  init_conv_block = channels >= 3 ? UNetConvBlock(channels, 64) : Chain(UNetConvBlock(channels, 3), UNetConvBlock(3, 64))
 
-  up_blocks = Chain(UNetUpBlock(1024, 512),
-		UNetUpBlock(1024, 256),
-		UNetUpBlock(512, 128),
-		UNetUpBlock(256, 64,p = 0.0f0),
-		Chain(x->leakyrelu.(x,0.2f0),
-		Conv((1, 1), 128=>labels;init=_random_normal)))									  
-  Unet(conv_down_blocks, conv_blocks, up_blocks)
+  conv_down_blocks = [i == depth ? x -> x : ConvDown(2^(5+i), 2^(5+i)) for i=1:depth]
+
+  conv_blocks = [UNetConvBlock(2^(5+i), 2^(6+min(i, depth-1))) for i=1:depth]
+
+  up_blocks = [UNetUpBlock(2^(6+min(i+1, depth-1)), 2^(5+i); p=(i == 1 ? 0f0 : .5f0)) for i=depth-1:-1:1]
+
+	out_blocks = Chain(x -> leakyrelu.(x, 0.2f0), Conv((1, 1), 128=>labels; init=_random_normal), x -> tanh.(x))
+
+  return Unet{depth}(conv_down_blocks, init_conv_block, conv_blocks, up_blocks, out_blocks)
 end
 
-function (u::Unet)(x::AbstractArray)
-  op = u.conv_blocks[1:2](x)
+function (u::Unet{D})(x::AbstractArray{T, 4}) where {D, T}
+  xcis = (u.init_conv_block(x),)
 
-  x1 = u.conv_blocks[3](u.conv_down_blocks[1](op))
-  x2 = u.conv_blocks[4](u.conv_down_blocks[2](x1))
-  x3 = u.conv_blocks[5](u.conv_down_blocks[3](x2))
-  x4 = u.conv_blocks[6](u.conv_down_blocks[4](x3))
+  for d=1:D
+    xcis = (xcis..., u.conv_blocks[d](u.conv_down_blocks[d](xcis[d])))
+  end
 
-  up_x4 = u.conv_blocks[7](x4)
+  ux = u.up_blocks[1](xcis[D+1], xcis[D-1])
 
-  up_x1 = u.up_blocks[1](up_x4, x3)
-  up_x2 = u.up_blocks[2](up_x1, x2)
-  up_x3 = u.up_blocks[3](up_x2, x1)
-  up_x5 = u.up_blocks[4](up_x3, op)
-  tanh.(u.up_blocks[end](up_x5))
+  for d=2:D-1
+    ux = u.up_blocks[d](ux, xcis[D-d])
+  end
+
+  return u.out_blocks(ux)
 end
 
 function Base.show(io::IO, u::Unet)

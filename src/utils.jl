@@ -1,5 +1,6 @@
 function _random_normal(shape...)
-  return Float32.(rand(Normal(0.f0,0.02f0),shape...))
+  
+  isnothing(testing_seed) ?  Float32.(rand(Normal(0.f0, 0.02f0),shape...)) : ones(Float32, shape...)
 end
 
 function extract_bboxes(mask)
@@ -30,6 +31,7 @@ function extract_bboxes(masks::AbstractArray{T,4}) where T
 end
 
 expand_dims(x,n::Int) = reshape(x,ones(Int64,n)...,size(x)...)
+
 function squeeze(x) 
     if size(x)[end] != 1
         return dropdims(x, dims = tuple(findall(size(x) .== 1)...))
