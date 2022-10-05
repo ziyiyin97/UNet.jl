@@ -46,17 +46,19 @@ end
 
 @functor Unet
 
+Unet(conv_down_blocks, init_conv_block, conv_blocks, up_blocks, out_blocks) = Unet{length(conv_down_blocks)}(conv_down_blocks, init_conv_block, conv_blocks, up_blocks, out_blocks)
+
 function Unet(channels::Integer = 1, labels::Int = channels, depth::Integer=5)
 
   init_conv_block = channels >= 3 ? UNetConvBlock(channels, 64) : Chain(UNetConvBlock(channels, 3), UNetConvBlock(3, 64))
 
-  conv_down_blocks = [i == depth ? x -> x : ConvDown(2^(5+i), 2^(5+i)) for i=1:depth]
+  conv_down_blocks = tuple([i == depth ? x -> x : ConvDown(2^(5+i), 2^(5+i)) for i=1:depth]...)
 
-  conv_blocks = [UNetConvBlock(2^(5+i), 2^(6+min(i, depth-1))) for i=1:depth]
+  conv_blocks = tuple([UNetConvBlock(2^(5+i), 2^(6+min(i, depth-1))) for i=1:depth]...)
 
-  up_blocks = [UNetUpBlock(2^(6+min(i+1, depth-1)), 2^(5+i); p=(i == 1 ? 0f0 : .5f0)) for i=depth-1:-1:1]
+  up_blocks = tuple([UNetUpBlock(2^(6+min(i+1, depth-1)), 2^(5+i); p=(i == 1 ? 0f0 : .5f0)) for i=depth-1:-1:1]...)
 
-	out_blocks = Chain(x -> leakyrelu.(x, 0.2f0), Conv((1, 1), 128=>labels; init=_random_normal), x -> tanh.(x))
+  out_blocks = Chain(x -> leakyrelu.(x, 0.2f0), Conv((1, 1), 128=>labels; init=_random_normal), x -> tanh.(x))
 
   return Unet{depth}(conv_down_blocks, init_conv_block, conv_blocks, up_blocks, out_blocks)
 end
